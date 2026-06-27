@@ -1,0 +1,64 @@
+# -- Data ----------------------------------------------------------------------
+data_dir: ./data/dataset_train
+test_dir: ./data/dataset_test_noisy
+num_samples: 50000           # surface points sampled per cloud (match test density)
+patch_size: 1024
+num_patches: 8
+k_neighbors: 32
+noise_std_min: 0.005
+noise_std_max: 0.020
+noise_type: laplace          # laplace | gaussian
+num_steps: 10                # decreasing alpha schedule length
+val_split: 0.05
+patch_frame: local           # global | local
+augment_rotation: false      # train-only per-patch SO(3) rotation
+augment_scale: 0.0           # train-only per-patch isotropic scale jitter +/-fraction (0 = off)
+
+# -- Model ----------------------------------------------------------------------
+feat_dim: 192                # per-point feature width (encoder output / AdaLN-Zero block width)
+num_attn: 3
+emb_dims: [64, 64]           # intermediate embedding stage dims; final stage outputs feat_dim
+emb_concat: true             # true = concat all embedding stage outputs then project
+emb_fusion: concat           # concat (separate channels) | add (pos summed into edge)
+decoder_dims: [128, 64]      # decoder Conv1d MLP hidden widths
+attn_type: offset            # offset (h - agg, PCT/Laplacian) | standard (agg)
+attn_heads: 1                # attention heads; 1 = PCT reduced-dim single head
+attn_softmax: pct            # pct (softmax over queries + L1 renorm) | scaled (1/sqrt(d) over keys)
+ffn_ratio: 4                 # FFN hidden expansion factor
+ffn_type: swiglu             # geglu (gated GELU) | swiglu (gated SiLU)
+
+# -- Loss -----------------------------------------------------------------------
+# total = residual_loss(pred_disp, target) + cd_weight * cd_term(pred_clean, gt_clean)
+cd_type: dcd                 # chamfer | dcd (density-aware: penalizes clustering)
+cd_weight: 0.002             # DCD term is [0,1]-scaled, so weight << a chamfer weight
+dcd_alpha: 8000              # dcd kernel exp(-alpha*sqdist); ~8000 puts typical post-denoise spacing in the responsive band
+loss_perp_weight: 1.0        # weight on off-surface (normal-projected) residual error
+loss_tang_weight: 1.0        # weight on along-surface residual error; == perp => plain MSE
+
+# -- Training -------------------------------------------------------------------
+batch_size: 6                # patches per batch
+epochs: 100
+lr: 0.0005
+lr_min: 0.00001
+warmup_epochs: 5             # linear LR warmup from 0 to lr over N epochs
+weight_decay: 0.0001
+grad_clip: 0.5               # max grad L2-norm; 0 disables
+optimizer: adamw             # adamw | adam | sgd
+seed: 42
+num_workers: 8
+log_interval: 50
+checkpoint_interval: 10
+checkpoint_dir: checkpoints
+history_path: history.json
+
+mini_val_interval: 2         # full-cloud diagnostic local score frequency; <=0 disables it
+mini_val_size: 50            # fixed validation meshes used for diagnostic mini score
+mini_val_min_delta: 0.0      # logged mini-score best requires this improvement margin
+mini_noise_types: [laplace]  # noise types scored per mesh in the mini metric
+
+# -- Inference ------------------------------------------------------------------
+recompute_neighbors: false
+patch_aggregation: residual  # position | residual
+patch_agg_beta: 4            # center-dominant weight exp(-beta*dist^2)
+inference_seed: 42           # deterministic FPS seed for prediction/evaluation
+seed_k: 6                    # num_patches at inference = seed_k * N / patch_size

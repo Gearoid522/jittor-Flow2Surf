@@ -1,0 +1,18 @@
+# Recreate the training environment:
+#   conda env create -f environment.yml
+#   conda activate jittor
+# Jittor compiles CUDA kernels at runtime, so the machine also needs a C++ compiler
+# (g++) and a matching CUDA toolkit -- see docs/server_setup.md for a fresh machine.
+name: jittor
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - jittor==1.3.10.0
+      - numpy==1.26.4
+      - scipy==1.17.1
+      - trimesh==4.12.2
+      - pyyaml==6.0.3
+      - point-cloud-utils==0.34.0
