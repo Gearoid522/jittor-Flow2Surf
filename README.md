@@ -4,6 +4,10 @@ Flow2Surf is a Jittor implementation of continuous-flow point cloud denoising.
 It predicts alpha-conditioned velocities on local patches and aggregates them
 while integrating from noisy to clean.
 
+Flow2Surf was developed for the 3D Point Cloud Denoising track of the Sixth
+Jittor Artificial Intelligence Challenge. It ranked first on both the A and B
+leaderboards, scoring 85.16 and 82.10, respectively.
+
 ## Features
 
 - Continuous-alpha velocity training independent of inference discretization.
