@@ -1,0 +1,6 @@
+name: B
+train_root: ../data/B/dataset_train
+test_root: ../data/B/dataset_test_noisy
+train_manifest: B_train.txt
+val_manifest: B_val.txt
+test_manifest: B_test.txt

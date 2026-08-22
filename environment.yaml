@@ -1,9 +1,9 @@
 # Recreate the training environment:
-#   conda env create -f environment.yml
-#   conda activate jittor
-# Jittor compiles CUDA kernels at runtime, so the machine also needs a C++ compiler
-# (g++) and a matching CUDA toolkit -- see docs/server_setup.md for a fresh machine.
-name: jittor
+#   conda env create -f environment.yaml
+#   conda activate flow2surf
+# Jittor compiles CUDA kernels at runtime and requires a compatible NVIDIA driver
+# and C++ compiler (g++); see docs/setup.md.
+name: flow2surf
 channels:
   - conda-forge
 dependencies:

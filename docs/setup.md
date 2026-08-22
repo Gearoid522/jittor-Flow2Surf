@@ -1,46 +1,40 @@
 # Flow2Surf Setup
 
-Flow2Surf runs on a CUDA GPU. Jittor compiles CUDA kernels at runtime, so the
-machine needs a matching CUDA toolkit and a C++ compiler (g++). Tested on an
-RTX 4090, Ubuntu 22.04.
+## Requirements
 
-## 1. Clone and create the environment
+- Linux with Conda, `g++`, and `zip`
+- CUDA-capable NVIDIA GPU and compatible driver/toolkit
+
+Jittor compiles CUDA kernels at runtime. The project has been tested on Ubuntu
+22.04 with an RTX 4090.
+
+## Installation
 
 ```bash
 git clone git@git.tsinghua.edu.cn:srw24/flow2surf.git
 cd flow2surf
-conda env create -f environment.yml
-conda activate jittor
+conda env create -f environment.yaml
+conda activate flow2surf
 ```
 
-## 2. Set up CUDA for Jittor
+## CUDA Verification
 
 ```bash
 python -m jittor_utils.install_cuda
-python -m jittor.test.test_cuda      # should finish and report CUDA support
+python -m jittor.test.test_cuda
 ```
 
-## 3. Data
+## Dataset
 
-Place or symlink the dataset under `data/`:
+Place or symlink the datasets under `data/`:
 
 ```text
 data/
-  dataset_train/shapenet/<synset_id>/<model_id>/models/model_normalized.obj
-  dataset_test_noisy/shapenet/<synset_id>/<model_id>/noisy.npy
+  A/dataset_train/shapenet/<synset_id>/<model_id>/models/model_normalized.obj
+  A/dataset_test_noisy/shapenet/<synset_id>/<model_id>/noisy.npy
+  B/dataset_train/shapenet/<synset_id>/<model_id>/models/model_normalized.obj
+  B/dataset_test_noisy/shapenet/<synset_id>/<model_id>/noisy.npy
 ```
 
-## 4. Train
-
-```bash
-python train.py --config configs/default.yaml      # writes logs/train_<time>.log
-```
-
-Use `tmux` (or similar) for long runs; resume with `--resume <checkpoint.pkl>`.
-
-## 5. Predict and package
-
-```bash
-python predict.py --config configs/default.yaml --model <checkpoint.pkl> --out results
-bash scripts/make_submission.sh <checkpoint.pkl> [config.yaml] [name]
-```
+Use `datasets/A.yaml` or `datasets/B.yaml` to select the corresponding exact
+split.

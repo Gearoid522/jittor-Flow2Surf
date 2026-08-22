@@ -1,142 +1,160 @@
-"""Score a checkpoint on the held-out val split (config-driven, reproducible).
+"""Score a Flow2Surf checkpoint on a fixed synthetic-noise grid.
 
 Usage:
-    python eval.py --config configs/default.yaml --model <ckpt.pkl>
+    python eval.py --config configs/default.yaml --dataset datasets/A.yaml \
+        --model <ckpt.pkl> --meshes 50
 
-Writes eval_<config>_<timestamp>.json with the setting and per-mesh scores.
+Each family-scale condition uses the same validation meshes. The output JSON
+contains overall, per-family, and per-scale summaries.
 """
 
 import argparse
 import json
+import logging
 import os
-import random
-from datetime import datetime
 
-import yaml
-import numpy as np
 import jittor as jt
+import yaml
 
-from src.dataset import build_datasets
-from predict import build_model
-from train import mini_val_score
+from flow2surf.dataset import load_dataset_spec, mesh_split_paths
+from flow2surf.evaluation import noise_grid_mesh_score, summarize_noise_grid
+from flow2surf.models import build_model
+from flow2surf.runtime import configure_logging, run_stamp, seed_runtime
 
+log = logging.getLogger("flow2surf.eval")
 
-def describe(values):
-    a = np.asarray(values, dtype=np.float64)
-    q = np.percentile(a, [0, 25, 50, 75, 100])
-    return {
-        "mean": float(a.mean()),
-        "std": float(a.std()),
-        "min": float(q[0]),
-        "p25": float(q[1]),
-        "median": float(q[2]),
-        "p75": float(q[3]),
-        "max": float(q[4]),
-    }
+EVAL_NOISE_TYPES = ("gaussian", "laplace")
+EVAL_NOISE_STD_LEVELS = (0.005, 0.010, 0.020, 0.030, 0.040)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="configs/default.yaml")
+    ap.add_argument("--dataset", default="datasets/A.yaml")
     ap.add_argument("--model", required=True, help="Checkpoint .pkl to score")
+    ap.add_argument(
+        "--meshes", type=int, default=50, help="Validation meshes per condition"
+    )
     args = ap.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    dataset = load_dataset_spec(args.dataset)
 
-    # everything that defines the run comes from the config
-    seed = int(cfg.get("inference_seed", cfg.get("seed", 42)))
-    n_meshes = int(cfg.get("eval_meshes", 200))
+    configure_logging()
 
-    # full determinism: identical inputs across runs, only the config differs
-    random.seed(seed)
-    np.random.seed(seed)
-    jt.set_global_seed(seed)
+    # Inference settings come from config; mesh count is an eval flag.
+    seed = int(cfg["inference_seed"])
+    n_meshes = int(args.meshes)
+    if n_meshes < 1:
+        raise ValueError(f"--meshes must be >= 1, got {n_meshes}")
+
+    # Deterministic eval for a fixed config, checkpoint, and mesh count.
+    seed_runtime(seed)
     jt.flags.use_cuda = 1
 
     model = build_model(cfg)
     model.load(args.model)
     model.eval()
 
-    _, val_ds = build_datasets(cfg)
-    paths = val_ds.paths[:n_meshes]
+    _, val_paths = mesh_split_paths(dataset)
+    paths = val_paths[:n_meshes]
+    if not paths:
+        raise ValueError("Validation split is empty; nothing to score")
 
+    architecture = {
+        "feat_dim": cfg["feat_dim"],
+        "encoder_dims": cfg["encoder_dims"],
+        "encoder_concat": cfg["encoder_concat"],
+        "k_neighbors": cfg["k_neighbors"],
+        "graph_gate_mult": cfg["graph_gate_mult"],
+        "num_blocks": cfg["num_blocks"],
+        "alpha_dim": cfg["alpha_dim"],
+        "alpha_encoding": cfg["alpha_encoding"],
+        "ffn_ratio": cfg["ffn_ratio"],
+        "ffn_mode": cfg["ffn_mode"],
+        "decoder_dims": cfg["decoder_dims"],
+    }
     inference = {
         "num_steps": cfg["num_steps"],
-        "seed_k": cfg.get("seed_k"),
-        "patch_frame": cfg.get("patch_frame", "local"),
-        "patch_aggregation": cfg.get("patch_aggregation", "residual"),
-        "patch_agg_beta": cfg.get("patch_agg_beta", 4),
-        "recompute_neighbors": cfg.get("recompute_neighbors", False),
-        "seed": seed,
+        "alpha_clean_power": cfg["alpha_clean_power"],
+        "alpha_noisy_power": cfg["alpha_noisy_power"],
+        "seed_k": cfg["seed_k"],
+        "inference_chunks": cfg["inference_chunks"],
+        "patch_agg_beta": cfg["patch_agg_beta"],
+        "inference_seed": seed,
     }
-    print(
-        f"scoring {len(paths)} meshes | "
-        + "  ".join(f"{k}={v}" for k, v in inference.items()),
-        flush=True,
+    log.info("Model: %s", args.model)
+    log.info("Config: %s", args.config)
+    log.info("Dataset: %s (%s)", args.dataset, dataset.name)
+    log.info(
+        f"Scoring: {len(paths)} meshes * {len(EVAL_NOISE_TYPES)} families * "
+        f"{len(EVAL_NOISE_STD_LEVELS)} levels"
     )
 
-    # score one mesh at a time to keep the full per-mesh distribution (the denoise
-    # cost is identical to a batched call; only bookkeeping differs)
-    rows = []
+    mesh_results = []
     for i, path in enumerate(paths):
-        r = mini_val_score(model, [path], cfg)
-        synset = os.path.basename(
-            os.path.dirname(os.path.dirname(os.path.dirname(path)))
+        mesh_result = noise_grid_mesh_score(
+            model,
+            path,
+            int(cfg["seed"]) + i,
+            cfg,
+            EVAL_NOISE_TYPES,
+            EVAL_NOISE_STD_LEVELS,
+            num_chunks=cfg["inference_chunks"],
         )
-        model_id = os.path.basename(os.path.dirname(os.path.dirname(path)))
-        rows.append(
-            {
-                "synset": synset,
-                "model_id": model_id,
-                "score": r["score"],
-                "cd": r["cd_score"],
-                "p2s": r["p2s_score"],
-            }
-        )
+        mesh_results.append(mesh_result)
         if (i + 1) % 10 == 0 or (i + 1) == len(paths):
-            run_mean = float(np.mean([row["score"] for row in rows]))
-            print(
-                f"  [{i + 1:>4}/{len(paths)}] running score={run_mean:.3f}", flush=True
-            )
+            log.info("  [%2d/%d] meshes", i + 1, len(paths))
 
-    summary = {
-        "score": describe([r["score"] for r in rows]),
-        "cd": describe([r["cd"] for r in rows]),
-        "p2s": describe([r["p2s"] for r in rows]),
-    }
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results = summarize_noise_grid(
+        mesh_results,
+        EVAL_NOISE_TYPES,
+        EVAL_NOISE_STD_LEVELS,
+    )
+    levels = tuple(f"{value:.3f}" for value in EVAL_NOISE_STD_LEVELS)
+    overall = results["overall"]
+    by_family = results["by_family"]
+    stamp = run_stamp()
     result = {
         "timestamp": stamp,
         "model": args.model,
         "config": args.config,
-        "num_samples": cfg["num_samples"],
-        "meshes": len(rows),
+        "dataset": args.dataset,
+        "protocol": {
+            "meshes_per_condition": len(mesh_results),
+            "num_samples": cfg["num_samples"],
+            "noise_families": list(EVAL_NOISE_TYPES),
+            "noise_std_levels": list(EVAL_NOISE_STD_LEVELS),
+        },
+        "architecture": architecture,
         "inference": inference,
-        "summary": summary,
-        "per_mesh": rows,
+        "results": results,
     }
 
-    # console summary
-    print(f"model      : {args.model}")
-    print(f"config     : {args.config}")
-    print(f"num_samples: {cfg['num_samples']}  meshes: {len(rows)}")
-    print(f"inference  : {inference}")
-    print("-" * 84)
-    for name in ("score", "cd", "p2s"):
-        s = summary[name]
-        print(
-            f"  {name:5}: mean={s['mean']:7.3f}  std={s['std']:6.3f}  "
-            f"min={s['min']:7.3f}  med={s['median']:7.3f}  max={s['max']:7.3f}"
-        )
+    log.info("-" * 76)
+    for noise_type in EVAL_NOISE_TYPES:
+        for level in levels:
+            condition = by_family[noise_type]["by_level"][level]
+            log.info(
+                f"  {noise_type:<8} {level} | "
+                f"score {condition['score']['mean']:.3f} "
+                f"(cd {condition['cd']['score']['mean']:.3f}, "
+                f"p2s {condition['p2s']['score']['mean']:.3f})"
+            )
+    log.info(
+        f"  overall          | score {overall['score']['mean']:.3f} "
+        f"(cd {overall['cd']['score']['mean']:.3f}, "
+        f"p2s {overall['p2s']['score']['mean']:.3f})"
+    )
 
-    # persistent JSON, auto-named by config + setting (never overwrites across settings)
+    # Persistent JSON, auto-named by config and timestamp.
     cfg_name = os.path.splitext(os.path.basename(args.config))[0]
     out = f"eval_{cfg_name}_{stamp}.json"
     with open(out, "w") as f:
         json.dump(result, f, indent=2)
-    print("-" * 84)
-    print(f"written {out}  ({len(rows)} meshes)")
+    log.info("-" * 76)
+    log.info("Wrote %s (%d meshes)", out, len(mesh_results))
 
 
 if __name__ == "__main__":

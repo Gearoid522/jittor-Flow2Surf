@@ -1,64 +1,54 @@
 # -- Data ----------------------------------------------------------------------
-data_dir: ./data/dataset_train
-test_dir: ./data/dataset_test_noisy
-num_samples: 50000           # surface points sampled per cloud (match test density)
-patch_size: 1024
-num_patches: 8
-k_neighbors: 32
-noise_std_min: 0.005
-noise_std_max: 0.020
-noise_type: laplace          # laplace | gaussian
-num_steps: 10                # decreasing alpha schedule length
-val_split: 0.05
-patch_frame: local           # global | local
-augment_rotation: false      # train-only per-patch SO(3) rotation
-augment_scale: 0.0           # train-only per-patch isotropic scale jitter +/-fraction (0 = off)
+num_samples: 50000              # clean samples per mesh
+noise_type: laplace             # gaussian | laplace
+noise_std_range: [0.005, 0.030] # coordinate std interval
+noise_std_sampling: log         # linear | log
+patch_size: 1024                # points per patch
+num_patches: 8                  # patches per mesh item
 
 # -- Model ----------------------------------------------------------------------
-feat_dim: 192                # per-point feature width (encoder output / AdaLN-Zero block width)
-num_attn: 3
-emb_dims: [64, 64]           # intermediate embedding stage dims; final stage outputs feat_dim
-emb_concat: true             # true = concat all embedding stage outputs then project
-emb_fusion: concat           # concat (separate channels) | add (pos summed into edge)
-decoder_dims: [128, 64]      # decoder Conv1d MLP hidden widths
-attn_type: offset            # offset (h - agg, PCT/Laplacian) | standard (agg)
-attn_heads: 1                # attention heads; 1 = PCT reduced-dim single head
-attn_softmax: pct            # pct (softmax over queries + L1 renorm) | scaled (1/sqrt(d) over keys)
-ffn_ratio: 4                 # FFN hidden expansion factor
-ffn_type: swiglu             # geglu (gated GELU) | swiglu (gated SiLU)
+feat_dim: 192                # hidden feature width
+encoder_dims: [64, 128]      # neighbor encoder widths
+encoder_concat: true         # concat encoder stages
+k_neighbors: 32              # neighbor count
+graph_gate_mult: 1           # 0 disables; 1 is xyz kNN
+num_blocks: 3                # transformer block count
+alpha_dim: 16                # shared alpha feature width
+alpha_encoding: scalar       # fourier | scalar
+ffn_ratio: 8
+ffn_mode: plain              # plain | lifted | value
+decoder_dims: [128, 64]
 
 # -- Loss -----------------------------------------------------------------------
-# total = residual_loss(pred_disp, target) + cd_weight * cd_term(pred_clean, gt_clean)
 cd_type: dcd                 # chamfer | dcd (density-aware: penalizes clustering)
-cd_weight: 0.002             # DCD term is [0,1]-scaled, so weight << a chamfer weight
-dcd_alpha: 8000              # dcd kernel exp(-alpha*sqdist); ~8000 puts typical post-denoise spacing in the responsive band
-loss_perp_weight: 1.0        # weight on off-surface (normal-projected) residual error
-loss_tang_weight: 1.0        # weight on along-surface residual error; == perp => plain MSE
+cd_weight: 0.005             # CD/DCD loss weight
+dcd_alpha: 8000              # DCD kernel sharpness
 
 # -- Training -------------------------------------------------------------------
-batch_size: 6                # patches per batch
+train_alpha_min: 0.2         # alpha sampling lower bound
 epochs: 100
+batch_size: 8                # meshes per batch
 lr: 0.0005
 lr_min: 0.00001
-warmup_epochs: 5             # linear LR warmup from 0 to lr over N epochs
+warmup_epochs: 5
 weight_decay: 0.0001
-grad_clip: 0.5               # max grad L2-norm; 0 disables
-optimizer: adamw             # adamw | adam | sgd
+grad_clip: 0.5               # max grad norm; 0 disables
+ema_decay: 0.999             # per-step; 0 disables
 seed: 42
 num_workers: 8
-log_interval: 50
+log_interval: 100
 checkpoint_interval: 10
 checkpoint_dir: checkpoints
-history_path: history.json
 
-mini_val_interval: 2         # full-cloud diagnostic local score frequency; <=0 disables it
-mini_val_size: 50            # fixed validation meshes used for diagnostic mini score
-mini_val_min_delta: 0.0      # logged mini-score best requires this improvement margin
-mini_noise_types: [laplace]  # noise types scored per mesh in the mini metric
+mini_val_interval: 2         # mini-val interval; <=0 disables
+mini_val_size: 50            # mini-val mesh count
+mini_val_chunks: 8           # mini-val inference splits
 
 # -- Inference ------------------------------------------------------------------
-recompute_neighbors: false
-patch_aggregation: residual  # position | residual
-patch_agg_beta: 4            # center-dominant weight exp(-beta*dist^2)
-inference_seed: 42           # deterministic FPS seed for prediction/evaluation
-seed_k: 6                    # num_patches at inference = seed_k * N / patch_size
+num_steps: 3                 # reverse-flow steps
+alpha_clean_power: 1         # clean-end schedule exponent
+alpha_noisy_power: 6         # noisy-end schedule exponent
+seed_k: 24                   # inference patch density
+patch_agg_beta: 5            # center vote falloff
+inference_chunks: 8          # predict/eval inference splits
+inference_seed: 42
