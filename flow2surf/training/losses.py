@@ -5,13 +5,7 @@ import jittor as jt
 from .distances import nearest_squared_distances
 
 
-def chamfer_loss(pred, target):
-    """Return bidirectional squared Chamfer loss for each batch element."""
-    pred_distance, _, target_distance, _ = nearest_squared_distances(pred, target)
-    return pred_distance.mean(dim=1) + target_distance.mean(dim=1)
-
-
-def density_aware_chamfer_loss(pred, target, alpha):
+def dcd_loss(pred, target, alpha):
     """Return density-aware Chamfer loss per point set.
 
     Reciprocal nearest-neighbor multiplicity penalizes many-to-one matches; an
@@ -45,15 +39,6 @@ def density_aware_chamfer_loss(pred, target, alpha):
     pred_term = (1.0 - pred_weight * jt.exp(-alpha * pred_distance)).mean(dim=1)
     target_term = (1.0 - target_weight * jt.exp(-alpha * target_distance)).mean(dim=1)
     return 0.5 * (pred_term + target_term)
-
-
-def geometric_loss(pred, target, loss_type, dcd_alpha):
-    """Return the selected Chamfer-family loss for each batch element."""
-    if loss_type == "dcd":
-        return density_aware_chamfer_loss(pred, target, dcd_alpha)
-    if loss_type == "chamfer":
-        return chamfer_loss(pred, target)
-    raise ValueError(f"Unknown cd_type: {loss_type}")
 
 
 def velocity_loss(pred_velocity, target_velocity):

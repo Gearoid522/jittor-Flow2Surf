@@ -9,19 +9,14 @@ num_patches: 8                  # patches per mesh item
 # -- Model ----------------------------------------------------------------------
 feat_dim: 192                # hidden feature width
 encoder_dims: [64, 128]      # neighbor encoder widths
-encoder_concat: true         # concat encoder stages
 k_neighbors: 32              # neighbor count
-graph_gate_mult: 1           # 0 disables; 1 is xyz kNN
 num_blocks: 3                # transformer block count
 alpha_dim: 16                # shared alpha feature width
-alpha_encoding: scalar       # fourier | scalar
 ffn_ratio: 8
-ffn_mode: plain              # plain | lifted | value
 decoder_dims: [128, 64]
 
 # -- Loss -----------------------------------------------------------------------
-cd_type: dcd                 # chamfer | dcd (density-aware: penalizes clustering)
-cd_weight: 0.005             # CD/DCD loss weight
+dcd_weight: 0.005            # density-aware point-set loss weight
 dcd_alpha: 8000              # DCD kernel sharpness
 
 # -- Training -------------------------------------------------------------------

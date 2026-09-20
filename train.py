@@ -23,7 +23,7 @@ from flow2surf.flow import flow_velocity, reconstruct_clean
 from flow2surf.models import build_model
 from flow2surf.runtime import configure_logging, git_revision, run_stamp, seed_runtime
 from flow2surf.training.checkpoint import CheckpointManager
-from flow2surf.training.losses import geometric_loss, velocity_loss
+from flow2surf.training.losses import dcd_loss, velocity_loss
 from flow2surf.training.optimization import ModelEMA, clip_grad_norm
 
 # -- Logging --------------------------------------------------------------------
@@ -43,18 +43,10 @@ def _patch_loss(model, pc_noisy, x_alpha, pc_clean, alpha, cfg):
     """Return total, velocity, and geometry loss vectors for a patch batch."""
     pred_velocity = model(x_alpha.permute(0, 2, 1), alpha)
     vel = velocity_loss(pred_velocity, flow_velocity(pc_clean, pc_noisy))
-    if cfg["cd_weight"] <= 0:
-        return vel, vel, None
-
     alpha = alpha.reshape(-1, 1, 1)
     pred_clean = reconstruct_clean(x_alpha, pred_velocity, alpha)
-    cd = geometric_loss(
-        pred_clean,
-        pc_clean,
-        cfg["cd_type"],
-        cfg["dcd_alpha"],
-    )
-    return vel + cfg["cd_weight"] * cd, vel, cd
+    dcd = dcd_loss(pred_clean, pc_clean, cfg["dcd_alpha"])
+    return vel + cfg["dcd_weight"] * dcd, vel, dcd
 
 
 def train_epoch(model, loader, optimizer, ema, cfg, epoch):
@@ -65,8 +57,8 @@ def train_epoch(model, loader, optimizer, ema, cfg, epoch):
         raise RuntimeError(f"Model parameters are frozen before training: {names}")
     model.train()
     total_loss = total_n = 0
-    step_loss = step_vel = step_cd = 0.0
-    cd_weight = cfg["cd_weight"]
+    step_loss = step_vel = step_dcd = 0.0
+    dcd_weight = cfg["dcd_weight"]
     grad_clip = cfg["grad_clip"]
     clipping = grad_clip is not None and grad_clip > 0
     max_grad_norm = jt.float32(0.0).stop_grad() if clipping else None
@@ -85,7 +77,7 @@ def train_epoch(model, loader, optimizer, ema, cfg, epoch):
         x_alpha = jt.array(pat_x_alpha).reshape(n, M, 3)
         pc_clean = jt.array(pat_clean).reshape(n, M, 3)
         alpha = jt.array(pat_alpha).reshape(B * P)
-        loss, vel, cd = _patch_loss(
+        loss, vel, dcd = _patch_loss(
             model,
             pc_noisy,
             x_alpha,
@@ -95,10 +87,10 @@ def train_epoch(model, loader, optimizer, ema, cfg, epoch):
         )
         loss_v = np.asarray(loss.numpy())
         vel_v = np.asarray(vel.numpy())
-        cd_v = np.asarray(cd.numpy()) if cd is not None else np.zeros_like(loss_v)
+        dcd_v = np.asarray(dcd.numpy())
         batch_loss = float(loss_v.mean())
         batch_vel = float(vel_v.mean())
-        batch_cd = float(cd_v.mean())
+        batch_dcd = float(dcd_v.mean())
         optimizer.backward(loss.sum() / n)
 
         if clipping:
@@ -112,14 +104,14 @@ def train_epoch(model, loader, optimizer, ema, cfg, epoch):
         total_n += n
         step_loss += batch_loss
         step_vel += batch_vel
-        step_cd += batch_cd
+        step_dcd += batch_dcd
 
         if (i + 1) % cfg["log_interval"] == 0:
             inv = 1.0 / cfg["log_interval"]
             avg_loss = step_loss * inv
             avg_vel = step_vel * inv
-            avg_cd = step_cd * inv
-            step_loss = step_vel = step_cd = 0.0
+            avg_dcd = step_dcd * inv
+            step_loss = step_vel = step_dcd = 0.0
             elapsed = time.time() - t0
             eta_s = (
                 (time.time() - step_t0) / cfg["log_interval"] * (total_steps - i - 1)
@@ -129,19 +121,12 @@ def train_epoch(model, loader, optimizer, ema, cfg, epoch):
             gn = f" | grad_norm_max {float(max_grad_norm):.4f}" if clipping else ""
             if clipping:
                 max_grad_norm.update(0.0)
-            if cd_weight > 0:
-                log.info(
-                    f"  [{epoch}] step {i+1:4d}/{total_steps} | "
-                    f"loss {avg_loss:.6f} "
-                    f"(vel {avg_vel:.6f} + cd {avg_cd:.6f}*{cd_weight}) | "
-                    f"elapsed {elapsed:.0f}s | eta {eta_s:.0f}s{gn}"
-                )
-            else:
-                log.info(
-                    f"  [{epoch}] step {i+1:4d}/{total_steps} | "
-                    f"loss {avg_loss:.6f} | avg {total_loss/total_n:.6f} | "
-                    f"elapsed {elapsed:.0f}s | eta {eta_s:.0f}s{gn}"
-                )
+            log.info(
+                f"  [{epoch}] step {i+1:4d}/{total_steps} | "
+                f"loss {avg_loss:.6f} "
+                f"(vel {avg_vel:.6f} + dcd {avg_dcd:.6f}*{dcd_weight}) | "
+                f"elapsed {elapsed:.0f}s | eta {eta_s:.0f}s{gn}"
+            )
 
     return total_loss / max(total_n, 1)
 
@@ -156,7 +141,7 @@ def val_epoch(model, loader, cfg):
     for pat_noisy, pat_x_alpha, pat_clean, pat_alpha in loader:
         B, P, M, _ = pat_noisy.shape
         n = B * P
-        loss, vel, cd = _patch_loss(
+        loss, vel, dcd = _patch_loss(
             model,
             jt.array(pat_noisy).reshape(n, M, 3),
             jt.array(pat_x_alpha).reshape(n, M, 3),
@@ -168,7 +153,7 @@ def val_epoch(model, loader, cfg):
         metric_values = (
             loss_v,
             np.asarray(vel.numpy()),
-            np.asarray(cd.numpy()) if cd is not None else np.zeros_like(loss_v),
+            np.asarray(dcd.numpy()),
         )
         metric_sums += [
             values.reshape(B, P).mean(axis=1).sum() for values in metric_values
@@ -212,6 +197,10 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
+    if cfg["dcd_weight"] <= 0:
+        raise ValueError(f"dcd_weight must be positive, got {cfg['dcd_weight']}")
+    if cfg["dcd_alpha"] <= 0:
+        raise ValueError(f"dcd_alpha must be positive, got {cfg['dcd_alpha']}")
     dataset = load_dataset_spec(args.dataset)
 
     stamp = run_stamp()
@@ -312,7 +301,7 @@ def main():
             cfg,
             epoch,
         )
-        val_loss, val_vel, val_cd = val_epoch(eval_model, val_ds, cfg)
+        val_loss, val_vel, val_dcd = val_epoch(eval_model, val_ds, cfg)
         mini = None
         mini_improved = False
         if mini_interval > 0 and epoch % mini_interval == 0:
@@ -350,7 +339,7 @@ def main():
             "train_loss": round(train_loss, 6),
             "val_loss": round(val_loss, 6),
             "val_vel": round(val_vel, 6),
-            "val_cd": round(val_cd, 6),
+            "val_dcd": round(val_dcd, 6),
         }
         if mini is not None:
             hist_item.update(
@@ -376,24 +365,17 @@ def main():
                 history,
             )
 
-        cd_w = cfg["cd_weight"]
+        dcd_w = cfg["dcd_weight"]
         log.info(
             f"  train | loss {train_loss:.6f} | epoch {elapsed:.0f}s | "
             f"eta {fmt_eta(eta)}"
         )
-        if cd_w > 0:
-            log.info(
-                f"  val   | loss {val_loss:.6f} "
-                f"(vel {val_vel:.6f}, cd {val_cd:.6f}*{cd_w}) | "
-                f"best {best_loss:.6f}@ep{best_epoch}"
-                + (" | NEW BEST" if is_best else "")
-            )
-        else:
-            log.info(
-                f"  val   | loss {val_loss:.6f} (vel {val_vel:.6f}) | "
-                f"best {best_loss:.6f}@ep{best_epoch}"
-                + (" | NEW BEST" if is_best else "")
-            )
+        log.info(
+            f"  val   | loss {val_loss:.6f} "
+            f"(vel {val_vel:.6f}, dcd {val_dcd:.6f}*{dcd_w}) | "
+            f"best {best_loss:.6f}@ep{best_epoch}"
+            + (" | NEW BEST" if is_best else "")
+        )
         if mini is not None:
             log.info(
                 f"  mini  | score {mini['score']:.2f} "

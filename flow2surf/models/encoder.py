@@ -127,11 +127,11 @@ class NeighborEncoder(nn.Module):
     """
     Encode local content and geometry with neighbor-order-invariant stages.
 
-    Input xyz is projected once. Each stage builds a feature graph, optionally
-    restricted by an xyz candidate pool, and combines content with geometry:
+    Input xyz is projected once. Every stage reuses one xyz kNN graph and
+    combines content with geometry:
 
         f0         = HPE(xyz)
-        idx        = kNN(f)
+        idx        = kNN(xyz)
         content    = [f_j - f_i, f_i]
         positional = HPE([xyz_j - xyz_i, xyz_i])
         message    = Linear([content, positional])
@@ -142,11 +142,9 @@ class NeighborEncoder(nn.Module):
     block is also exact. Both factorizations avoid storing the full
     neighbor-message tensor.
 
-    graph_gate_mult > 0 restricts feature-neighbor selection to an xyz-neighbor
-    candidate pool of graph_gate_mult * k points, shared by every stage. A value
-    of 1 gives xyz kNN, 0 disables gating, and wider pools permit feature-based
-    reranking. concat_all concatenates and projects every stage output; otherwise
-    the encoder returns only its final stage.
+    Reusing fixed spatial neighbors keeps local geometry semantics stable and
+    avoids repeated graph searches. All stage outputs are concatenated and
+    projected to the requested output width.
     """
 
     def __init__(
@@ -154,16 +152,9 @@ class NeighborEncoder(nn.Module):
         k=32,
         out_dim=128,
         dims=(64, 64),
-        concat_all=True,
-        graph_gate_mult=0,
     ):
         super().__init__()
-        graph_gate_mult = int(graph_gate_mult)
-        if graph_gate_mult < 0:
-            raise ValueError(f"graph_gate_mult must be >= 0, got {graph_gate_mult}")
         self.k = k
-        self.concat_all = concat_all
-        self.graph_gate_mult = graph_gate_mult
         self.stage_dims = list(dims) + [out_dim]
 
         input_width = self.stage_dims[0]
@@ -179,32 +170,15 @@ class NeighborEncoder(nn.Module):
                 )
             ]
         )
-        if concat_all:
-            self.proj = _projection_head(sum(self.stage_dims), out_dim)
+        self.proj = _projection_head(sum(self.stage_dims), out_dim)
 
     def execute(self, x):
         xyz = x
         features = _point_mlp(self.input_embed, xyz)
-        candidate_indices = None
-        if self.graph_gate_mult > 0:
-            points = xyz.shape[-1]
-            # Keep at least k candidates so tiny patches use padded spatial kNN.
-            candidate_count = (
-                self.k
-                if points <= self.k
-                else min(self.graph_gate_mult * self.k, points - 1)
-            )
-            candidate_indices = knn_indices(xyz, candidate_count)
+        indices = knn_indices(xyz, self.k)
 
         outputs = []
         for stage in self.stages:
-            indices = (
-                knn_indices(features, self.k, candidate_indices)
-                if candidate_indices is not None
-                else knn_indices(features, self.k)
-            )
             features = stage(features, xyz, indices)
             outputs.append(features)
-        if self.concat_all:
-            return self.proj(jt.concat(outputs, dim=1))
-        return outputs[-1]
+        return self.proj(jt.concat(outputs, dim=1))

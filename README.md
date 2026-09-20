@@ -11,8 +11,8 @@ leaderboards, scoring 85.16 and 82.10, respectively.
 ## Features
 
 - Continuous-alpha velocity training independent of inference discretization.
-- XYZ-gated feature neighborhoods combining content and HPE positional edges
-  through an exact factorized projection.
+- Shared XYZ neighborhoods combining content and HPE positional edges through
+  an exact factorized projection.
 - Alpha-conditioned AdaLN-Zero transformer trunk with offset attention and
   SwiGLU feed-forward networks.
 - Center-weighted fusion of overlapping patch velocities at each reverse-flow

@@ -65,14 +65,10 @@ def main():
     architecture = {
         "feat_dim": cfg["feat_dim"],
         "encoder_dims": cfg["encoder_dims"],
-        "encoder_concat": cfg["encoder_concat"],
         "k_neighbors": cfg["k_neighbors"],
-        "graph_gate_mult": cfg["graph_gate_mult"],
         "num_blocks": cfg["num_blocks"],
         "alpha_dim": cfg["alpha_dim"],
-        "alpha_encoding": cfg["alpha_encoding"],
         "ffn_ratio": cfg["ffn_ratio"],
-        "ffn_mode": cfg["ffn_mode"],
         "decoder_dims": cfg["decoder_dims"],
     }
     inference = {
